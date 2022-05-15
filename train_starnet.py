@@ -1,11 +1,8 @@
 import torch
-import torch.nn as nn
-from torch.nn import Linear, ReLU, Sequential, Conv1d, MaxPool1d, Module, Dropout, LeakyReLU, MSELoss
+from torch.nn import Linear, ReLU, Sequential, Conv1d, MaxPool1d, Module, MSELoss
 from torch import flatten
 import torch.optim as optim
 import numpy as np
-import h5py
-import time
 import os
 import sys
 import argparse
@@ -154,50 +151,21 @@ def val_epoch_generator(NN,valid_generator,device,val_steps,loss_fn):
         return avgLoss
 
 
-# Function to execute a training epoch
-def train_epoch(NN,filepath,indices,targets,mean,std,batch_size,scheduler,optimizer):
-
-    NN.train()
-    loss = 0
-    # Passing the data through the NN
-    n_train = len(indices)
-    for i in range(n_train//batch_size):
-        #sys.stdout.write('{}/{}\n'.format(i, n_train//batch_size))
-        NN.zero_grad()
-        x,y_true = get_batch(filepath,indices,targets,mean,std,batch_size,i)
-        y_pred = NN(x)
-        batch_loss = l1(y_pred,y_true)
-        batch_loss.backward()
-        loss += batch_loss*batch_size
-        optimizer.step()
-    scheduler.step()
-    MSE = (loss/(batch_size*(n_train//batch_size))).detach().cpu().numpy()
-    return MSE
-
-
-# Function to execute a validation epoch
-def val_epoch(NN,filepath,indices,targets,mean,std,batch_size):
-    NN.eval()
-    with torch.no_grad():
-        loss = 0
-        # Passing the data through the NN
-        n_val = len(indices)
-        for i in range(n_val//batch_size):
-            x,y_true = get_batch(filepath,indices,targets,mean,std,batch_size,i)
-            y_pred = NN(x)
-            loss += batch_size*l1(y_pred,y_true)
-        MSE = (loss/(batch_size*(n_val//batch_size))).detach().cpu().numpy()
-        return MSE
-
-
 def train_NN(config, num_train, data_path, targets, spec_key, save_folder, max_epochs, noise_addition,
              remove_gaps, remove_arm, weight_decay, val_data_path, min_wvl, max_wvl):
     
-    sizes,lr,batch_size = config
-    
+    lr, batch_size = config
+
+
     if not os.path.exists(save_folder):
         os.makedirs(save_folder)
-        np.save(os.path.join(save_folder, 'config.npy'), np.asarray(config))
+        with open((os.path.join(save_folder, 'config.txt')), 'w') as f:
+            f.write('{}\n'.format(data_path))
+            f.write('{}\n'.format(targets))
+            f.write('{}\n'.format(spec_key))
+            f.write('{}\n'.format(noise_addition))
+            f.write('{}\n'.format(remove_gaps))
+            f.write('{}'.format(remove_arm))
 
     train_loader, valid_loader, len_spec = get_train_valid_loader(data_path,
                                                                   batch_size,
@@ -223,7 +191,7 @@ def train_NN(config, num_train, data_path, targets, spec_key, save_folder, max_e
     use_cuda = torch.cuda.is_available()
     device = torch.device("cuda:0" if use_cuda else "cpu")
 
-    # Initializing the startorch
+    # Initializing the startorch model
     #NN = DNN(sizes, len(targets), 43480).to(device)
     NN = StarNet(1, len(targets), (1, len_spec))
 
@@ -246,7 +214,7 @@ def train_NN(config, num_train, data_path, targets, spec_key, save_folder, max_e
     #weight_decay = 0
     # Setting up optimizer and learning rates
     #optimizer = optim.Adam([{'params': NN.parameters(), 'lr': lr}, 'weight_decay': weight_decay])
-    optimizer = optim.Adam(NN.parameters(), lr=0.0007, weight_decay=weight_decay)
+    optimizer = optim.Adam(NN.parameters(), lr=lr, weight_decay=weight_decay)
     #scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.995)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer,
                                                      mode='min',
@@ -272,12 +240,11 @@ def train_NN(config, num_train, data_path, targets, spec_key, save_folder, max_e
                                        val_steps=valSteps,
                                        loss_fn=loss_fn)
         scheduler.step(loss_val)
-        #loss_train = train_epoch(NN,data_file,indices_train,targets,mean,std,batch_size,scheduler,optimizer)
-        #loss_val = val_epoch(NN,data_file,indices_val,targets,mean,std,batch_size)
+
         sys.stdout.write('train_loss: {}, val_loss: {}\n'.format(loss_train,loss_val))
         # Saving results to txt file
         sys.stdout.write('Saving training losses to {}\n'.format(os.path.join(save_folder,'train_hist.txt')))
-        with open((os.path.join(save_folder,'train_hist.txt')), 'a+') as f:
+        with open((os.path.join(save_folder, 'train_hist.txt')), 'a+') as f:
             f.write('{}, '.format(loss_train))
             f.write('{}'.format(loss_val))
             f.write('\n')
@@ -301,7 +268,7 @@ if __name__ == "__main__":
                         help='Keys of h5py file to train on')
     parser.add_argument('--spec_key', type=str, required=True,
                         help='h5py key for spectra')
-    parser.add_argument('--layers', nargs='+', required=True,
+    parser.add_argument('--layers', nargs='+', required=False,
                         help='sizes of layers of NN')
     parser.add_argument('--save_folder', type=str, default=None,
                         help='Folder to save trained model in (if None, folder name created based on date)')
@@ -310,8 +277,8 @@ if __name__ == "__main__":
     parser.add_argument('-e', '--epochs', type=int, default=300,
                         help='Maximum number of epochs for training')
     parser.add_argument('-g', '--num_gpu', type=int, default=1,
-                        help='Number of GPUs available for training')
-    parser.add_argument('-lr', '--learning_rate', type=float, default=2.3e-3,
+                        help='Number of GPUs to use for training')
+    parser.add_argument('-lr', '--learning_rate', type=float, default=0.0007,
                         help='Learning rate for NN')
     parser.add_argument('--noise_addition', type=str, default='False',
                         help='Add noise if True')
@@ -339,7 +306,6 @@ if __name__ == "__main__":
     batch_size = args.batch_size
     num_gpu = args.num_gpu
     lr = args.learning_rate
-    sizes = np.array(args.layers, dtype=int)
     noise_addition = str2bool(args.noise_addition)
     remove_gaps = str2bool(args.remove_gaps)
     remove_arm = str2bool(args.remove_arm)
